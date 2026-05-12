@@ -25,3 +25,10 @@ dependencies = [
     "tqdm",
     "pyyaml",
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+only-include = ["features.py", "schema.py"]
+

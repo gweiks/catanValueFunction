@@ -21,8 +21,9 @@ from catanatron_gym.features import (
     resource_hand_features,
 )
 
-# Alternative to catanatron_gym.game_features but renaming for the sake of consistency and 
-def game_features_adjustment(game: Game, pov_color: Color) -> dict[str, float]:
+# Alternative to catanatron_gym.game_features: upstream references game.state.playable_actions
+# (lives on game, not state, in pinned SHA) and ActionType.DISCARD (renamed DISCARD_RESOURCE).
+def game_features_compat(game: Game, pov_color: Color):
     possible_actions = {a.action_type for a in game.playable_actions}
     features: dict[str, float] = {
         "BANK_DEV_CARDS": len(game.state.development_listdeck),
@@ -70,7 +71,7 @@ def create_sample_92(game: Game, pov_color: Color):
 
 # Constructs a fresh BASE 2-player game, calls create_sample_92, and
 # returns sorted(sample.keys())
-def build_feature_ordering() -> list[str]:
+def build_feature_ordering():
     """Return the canonical alphabetically-sorted list of 92 feature names.
 
     Constructs a fresh BASE 2-player game, calls create_sample_92, and
