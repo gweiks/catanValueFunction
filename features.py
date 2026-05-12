@@ -21,11 +21,24 @@ from catanatron_gym.features import (
     resource_hand_features,
 )
 
+PORT_DISTANCE_STANDIN = 0.0
+
+# Extractor list for the different features we can pull from a game state.
+# Must be defined AFTER game_features_compat so the reference resolves at module load.
+CUSTOM_EXTRACTORS = [
+    player_features,
+    resource_hand_features,
+    game_features_compat,
+    build_production_features(consider_robber=True),  
+    build_production_features(consider_robber=False),
+    port_distance_features
+]
+
 # Alternative to catanatron_gym.game_features: upstream references game.state.playable_actions
 # (lives on game, not state, in pinned SHA) and ActionType.DISCARD (renamed DISCARD_RESOURCE).
 def game_features_compat(game: Game, pov_color: Color):
     possible_actions = {a.action_type for a in game.playable_actions}
-    features: dict[str, float] = {
+    features = {
         "BANK_DEV_CARDS": len(game.state.development_listdeck),
         "IS_MOVING_ROBBER": ActionType.MOVE_ROBBER in possible_actions,
         "IS_DISCARDING": ActionType.DISCARD_RESOURCE in possible_actions,
@@ -37,30 +50,14 @@ def game_features_compat(game: Game, pov_color: Color):
     return features
 
 
-PORT_DISTANCE_STANDIN = 0.0
-
-
-# Extractor list for the different features we can pull from a game state
-CUSTOM_EXTRACTORS = [
-    player_features,
-    resource_hand_features,
-    game_features_compat,
-    build_production_features(consider_robber=True),   # EFFECTIVE_* prefix
-    build_production_features(consider_robber=False),  # TOTAL_* prefix
-    port_distance_features,
-]
-
-
 
 # Based on game output the features to be used at the current state
 def create_sample_92(game: Game, pov_color: Color):
-    record: dict[str, float] = {}
+    record = {}
     for ex in CUSTOM_EXTRACTORS:
         record.update(ex(game, pov_color))
 
-    # Sanitize port_distance unreachable-port sentinel.
-    # See RESEARCH.md Pitfall 4: inf paired with HAS_*_PORT=0 means
-    # "no port reachable"; we collapse to 0.0 so float32 + StandardScaler work.
+    # Replace port_distance unreachable-port (inf) with the standin 0
     inf = float("inf")
     for k, v in list(record.items()):
         if isinstance(v, float) and (v == inf or v == -inf):
@@ -72,15 +69,6 @@ def create_sample_92(game: Game, pov_color: Color):
 # Constructs a fresh BASE 2-player game, calls create_sample_92, and
 # returns sorted(sample.keys())
 def build_feature_ordering():
-    """Return the canonical alphabetically-sorted list of 92 feature names.
-
-    Constructs a fresh BASE 2-player game, calls create_sample_92, and
-    returns sorted(sample.keys()). The result is deterministic because the
-    set of keys is fixed by the extractor implementations regardless of
-    game state.
-
-    Raises AssertionError if the count is not exactly 92.
-    """
     game = Game(
         [SimplePlayer(Color.RED), SimplePlayer(Color.BLUE)],
         catan_map=build_map("BASE"),

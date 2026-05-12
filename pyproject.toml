@@ -21,7 +21,6 @@ dependencies = [
     "pandas>=2.2",
     "scipy>=1.17",
     "matplotlib>=3.10",
-    "typer",
     "tqdm",
     "pyyaml",
 ]
@@ -30,10 +29,7 @@ dependencies = [
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-only-include = ["features.py", "schema.py", "collect.py", "flatten.py", "cli.py"]
-
-[project.scripts]
-catan-vf = "cli:app"
+only-include = ["features.py", "schema.py", "collect.py", "flatten.py"]
 
 [dependency-groups]
 dev = [
