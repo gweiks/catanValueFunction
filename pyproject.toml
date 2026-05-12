@@ -30,5 +30,13 @@ dependencies = [
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-only-include = ["features.py", "schema.py"]
+only-include = ["features.py", "schema.py", "collect.py", "flatten.py", "cli.py"]
+
+[project.scripts]
+catan-vf = "cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
 
