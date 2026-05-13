@@ -1,18 +1,14 @@
 """flatten.py — Flatten per-game parquet files into a partitioned dataset.
 
 Reads data/raw/<game_id>.parquet files, appends a shard column (sha256-based
-% 100), writes a partitioned parquet dataset, generates splits.json (80/10/10
-by game_id, reproducible), and writes MANIFEST.json with all DATA-18 fields
-plus discretionary extras.
+% 100), writes a partitioned parquet dataset, and generates splits.json
+(80/10/10 by game_id, reproducible).
 
 Public API:
     SPLIT_SEED              int  — fixed seed for deterministic splits
-    DATASET_VERSION         str  — semver; embedded in MANIFEST
-    FEATURE_SUBSET_NAME     str  — matches data/feature_ordering.json
     shard_of(game_id)       str  → int in range(100); sha256-based, never hash()
     build_splits(game_ids)  list[str] → dict[str,list[str]] — 80/10/10 by game_id
     assert_no_overlap(splits) — raises AssertionError if any id is in two splits
-    write_manifest(...)     — writes MANIFEST.json atomically
     flatten_run(...)        — orchestrates the full flatten pipeline; returns summary
 """
 
@@ -20,9 +16,7 @@ import hashlib
 import json
 import os
 import random as _rnd
-import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -38,12 +32,6 @@ SPLIT_SEED: int = 0xCA7A_5EED
 dataset creation — changing it would produce different splits and invalidate the
 anti-p-hacking guard (test split must be committed before it is inspected)."""
 
-DATASET_VERSION: str = "1.0.0"
-"""Semver dataset version. Increment major when schema or split logic changes."""
-
-FEATURE_SUBSET_NAME: str = "subset_92"
-"""Name of the 92-feature subset used; matches data/feature_ordering.json."""
-
 
 # ---------------------------------------------------------------------------
 # shard_of — sha256-based, never Python builtin hash()
@@ -57,7 +45,7 @@ def shard_of(game_id: str) -> int:
 
 
 # Partition game_ids into train/val/test lists (80/10/10).
-def build_splits(game_ids: list[str]) -> dict[str, list[str]]:
+def build_splits(game_ids: list[str]):
     sorted_ids = sorted(game_ids)
     rng = _rnd.Random(SPLIT_SEED)
     rng.shuffle(sorted_ids)
@@ -79,9 +67,8 @@ def build_splits(game_ids: list[str]) -> dict[str, list[str]]:
     return {"train": train, "val": val, "test": test}
 
 
-
-def assert_no_overlap(splits: dict[str, list[str]]) -> None:
-    """Raise AssertionError if any game_id appears in more than one split."""
+# Raise AssertionError if any game_id appears in more than one split.
+def assert_no_overlap(splits: dict[str, list[str]]):
     seen: set[str] = set()
     for split_name, ids in splits.items():
         overlap = seen & set(ids)
@@ -92,70 +79,6 @@ def assert_no_overlap(splits: dict[str, list[str]]) -> None:
 
 
 
-def write_manifest(
-    manifest_path: Path,
-    totals: dict,
-    splits_path: Path,
-    feature_ordering_path: Path,
-):
-    """
-    Fields written:
-        dataset_version, git_commit, total_games,
-        total_snapshots, feature_subset_name, splits_sha256,
-        feature_ordering_sha256, generation_timestamp
-    Discretionary extras: truncation_rate, per_pairing_snapshot_counts,
-            n_failed_games, schema_sha256
-
-    """
-    # sha256 of splits.json
-    splits_sha256 = hashlib.sha256(splits_path.read_bytes()).hexdigest()
-
-    # sha256 of feature_ordering.json (use bytes for stability)
-    if feature_ordering_path.exists():
-        feature_ordering_sha256 = hashlib.sha256(
-            feature_ordering_path.read_bytes()
-        ).hexdigest()
-    else:
-        feature_ordering_sha256 = "UNKNOWN"
-
-    # sha256 of schema (field name:type concatenation — stable across pyarrow versions)
-    schema_sha256 = hashlib.sha256(
-        "|".join(f"{f.name}:{f.type}" for f in SCHEMA).encode()
-    ).hexdigest()
-
-    # git commit
-    try:
-        git_commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=str(manifest_path.parent.parent if manifest_path.parent != manifest_path.parent.parent else "."),
-        ).stdout.strip() or "UNKNOWN"
-    except Exception:
-        git_commit = "UNKNOWN"
-
-    manifest = {
-        "dataset_version": DATASET_VERSION,
-        "feature_ordering_sha256": feature_ordering_sha256,
-        "feature_subset_name": FEATURE_SUBSET_NAME,
-        "generation_timestamp": datetime.now(timezone.utc).isoformat(),
-        "git_commit": git_commit,
-        "n_failed_games": totals.get("n_failed_games", 0),
-        "per_pairing_snapshot_counts": totals.get("per_pairing_snapshot_counts", {}),
-        "schema_sha256": schema_sha256,
-        "splits_sha256": splits_sha256,
-        "total_games": totals["total_games"],
-        "total_snapshots": totals["total_snapshots"],
-        "truncation_rate": totals.get("truncation_rate", 0.0),
-    }
-
-    content = json.dumps(manifest, indent=2, sort_keys=True)
-    tmp = manifest_path.with_suffix(".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, manifest_path)
-
-
 
 # Flatten per-game parquet files into a partitioned dataset.les
 # AssertionError if integrity checks fail.
@@ -163,10 +86,7 @@ def flatten_run(
     raw_dir: Path,
     out_dir: Path,
     data_dir: Path | None = None,
-) -> dict:
-    """Flatten per-game parquet files into a partitioned dataset.les.
-        AssertionError: if integrity checks fail.
-    """
+):
     raw_dir = Path(raw_dir)
     out_dir = Path(out_dir)
     if data_dir is None:
@@ -189,7 +109,7 @@ def flatten_run(
         pa.field("shard", pa.uint8(), nullable=False), shards
     )
 
-    # 3. Write partitioned parquet
+    # Write partitioned parquet
     out_dir.mkdir(parents=True, exist_ok=True)
     pq.write_to_dataset(
         table,
@@ -267,29 +187,11 @@ def flatten_run(
         f"Extra:   {seen - set(unique_ids)}"
     )
 
-    # Write MANIFEST.json
-    manifest_path = data_dir / "MANIFEST.json"
-    feature_ordering_path = Path("data/feature_ordering.json")
-
-    write_manifest(
-        manifest_path=manifest_path,
-        totals={
-            "total_games": total_games,
-            "total_snapshots": total_snapshots,
-            "truncation_rate": truncation_rate,
-            "per_pairing_snapshot_counts": per_pairing,
-            "n_failed_games": n_failed_games,
-        },
-        splits_path=splits_path,
-        feature_ordering_path=feature_ordering_path,
-    )
-
     return {
         "total_games": total_games,
         "total_snapshots": total_snapshots,
         "truncation_rate": truncation_rate,
         "n_failed_games": n_failed_games,
-        "manifest_path": str(manifest_path),
         "splits_path": str(splits_path),
     }
 
@@ -310,7 +212,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--data-dir", type=Path, default=None,
-        help="Where to write splits.json + MANIFEST.json (default: out_dir.parent)"
+        help="Where to write splits.json (default: out_dir.parent)"
     )
     args = parser.parse_args()
     result = flatten_run(

@@ -11,4 +11,4 @@ __pycache__/
 data/raw/
 data/snapshots.parquet/
 data/splits.json
-data/MANIFEST.json
+tests/

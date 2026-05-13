@@ -23,16 +23,6 @@ from catanatron_gym.features import (
 
 PORT_DISTANCE_STANDIN = 0.0
 
-# Extractor list for the different features we can pull from a game state.
-# Must be defined AFTER game_features_compat so the reference resolves at module load.
-CUSTOM_EXTRACTORS = [
-    player_features,
-    resource_hand_features,
-    game_features_compat,
-    build_production_features(consider_robber=True),  
-    build_production_features(consider_robber=False),
-    port_distance_features
-]
 
 # Alternative to catanatron_gym.game_features: upstream references game.state.playable_actions
 # (lives on game, not state, in pinned SHA) and ActionType.DISCARD (renamed DISCARD_RESOURCE).
@@ -48,6 +38,17 @@ def game_features_compat(game: Game, pov_color: Color):
             game.state.resource_freqdeck, resource
         )
     return features
+
+
+# Extractor list for the different features we can pull from a game state.
+CUSTOM_EXTRACTORS = [
+    player_features,
+    resource_hand_features,
+    game_features_compat,
+    build_production_features(consider_robber=True),
+    build_production_features(consider_robber=False),
+    port_distance_features,
+]
 
 
 
