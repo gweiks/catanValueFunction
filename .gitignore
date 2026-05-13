@@ -4,3 +4,11 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .env
+.planning/
+.DS_Store
+
+# Data handoff not particulaly committed to github
+data/raw/
+data/snapshots.parquet
+data/splits.json
+tests/
