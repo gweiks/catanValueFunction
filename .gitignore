@@ -9,6 +9,6 @@ __pycache__/
 
 # Data handoff not particulaly committed to github
 data/raw/
-data/snapshots.parquet/
+data/snapshots.parquet
 data/splits.json
 tests/

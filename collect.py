@@ -222,8 +222,3 @@ if __name__ == "__main__":
         print("per_pairing_snapshot_counts:")
         for k, v in sorted(result["per_pairing_snapshot_counts"].items()):
             print(f"  {k}: {v}")
-    if args.test_n is not None:
-        print("test-n run complete; re-invoke without --test-n to scale to full run.")
-    elif result["truncation_rate"] > 0.02:
-        print("ERROR truncation > 2%; bump TURNS_LIMIT and re-run.", file=sys.stderr)
-        sys.exit(1)

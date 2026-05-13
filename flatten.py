@@ -1,25 +1,22 @@
-"""flatten.py — Flatten per-game parquet files into a partitioned dataset.
+"""flatten.py — Flatten per-game parquet files into a single dataset file.
 
-Reads data/raw/<game_id>.parquet files, appends a shard column (sha256-based
-% 100), writes a partitioned parquet dataset, and generates splits.json
-(80/10/10 by game_id, reproducible).
+Reads data/raw/<game_id>.parquet files, concatenates them into a single
+parquet file at out_path, and generates splits.json (80/10/10 by game_id,
+reproducible).
 
 Public API:
     SPLIT_SEED              int  — fixed seed for deterministic splits
-    shard_of(game_id)       str  → int in range(100); sha256-based, never hash()
     build_splits(game_ids)  list[str] → dict[str,list[str]] — 80/10/10 by game_id
     assert_no_overlap(splits) — raises AssertionError if any id is in two splits
     flatten_run(...)        — orchestrates the full flatten pipeline; returns summary
 """
 
-import hashlib
 import json
-import os
 import random as _rnd
+import shutil
 import sys
 from pathlib import Path
 
-import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
@@ -27,21 +24,7 @@ from schema import SCHEMA
 
 # Module-level constants
 
-SPLIT_SEED: int = 0xCA7A_5EED
-"""Fixed seed for train/val/test split shuffling. NEVER change this after first
-dataset creation — changing it would produce different splits and invalidate the
-anti-p-hacking guard (test split must be committed before it is inspected)."""
-
-
-# ---------------------------------------------------------------------------
-# shard_of — sha256-based, never Python builtin hash()
-# ---------------------------------------------------------------------------
-
-# Return the shard index (0-99) for a given game_id.
-def shard_of(game_id: str) -> int:
-    digest = hashlib.sha256(game_id.encode()).digest()
-    return int.from_bytes(digest[:4], "big") % 100
-
+SPLIT_SEED = 0xCA7A_5EED
 
 
 # Partition game_ids into train/val/test lists (80/10/10).
@@ -54,8 +37,6 @@ def build_splits(game_ids: list[str]):
     n_val = max(1, round(n * 0.10)) if n >= 2 else 0
     n_test = max(1, round(n * 0.10)) if n >= 2 else 0
 
-    # For exactly 100 games we want 80/10/10 precisely.
-    # General formula: train gets everything not in val+test.
     if n == 100:
         n_val = 10
         n_test = 10
@@ -78,21 +59,20 @@ def assert_no_overlap(splits: dict[str, list[str]]):
         seen |= set(ids)
 
 
-
-
-# Flatten per-game parquet files into a partitioned dataset.les
+# Flatten per-game parquet files into a single output parquet file.
 # AssertionError if integrity checks fail.
 def flatten_run(
     raw_dir: Path,
-    out_dir: Path,
+    out_path: Path,
     data_dir: Path | None = None,
 ):
     raw_dir = Path(raw_dir)
-    out_dir = Path(out_dir)
+    out_path = Path(out_path)
     if data_dir is None:
-        data_dir = out_dir.parent
+        data_dir = out_path.parent
 
     data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     # Read raw dataset (validates against SCHEMA on read)
     parquet_files = list(raw_dir.glob("*.parquet"))
@@ -101,23 +81,16 @@ def flatten_run(
 
     raw_dataset = ds.dataset(str(raw_dir), schema=SCHEMA, format="parquet")
     table = raw_dataset.to_table()
-
-    # Append shard column
     game_ids_col = table.column("game_id").to_pylist()
-    shards = pa.array([shard_of(g) for g in game_ids_col], type=pa.uint8())
-    table = table.append_column(
-        pa.field("shard", pa.uint8(), nullable=False), shards
-    )
 
-    # Write partitioned parquet
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pq.write_to_dataset(
-        table,
-        root_path=str(out_dir),
-        partition_cols=["shard"],
-        existing_data_behavior="delete_matching",
-        compression="snappy",
-    )
+    # If a directory exists at out_path (legacy partitioned layout), remove it
+    # so pq.write_table can write a single file at that path.
+    if out_path.is_dir():
+        shutil.rmtree(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write single parquet file
+    pq.write_table(table, str(out_path), compression="snappy")
 
     # Build splits and write splits.json
     unique_ids = sorted(set(game_ids_col))
@@ -137,7 +110,6 @@ def flatten_run(
     game_complete_col = table.column("game_complete").to_pylist()
     game_complete_map: dict[str, bool] = {}
     for gid, gc in zip(game_ids_col, game_complete_col):
-        # If any snapshot in the game has game_complete=True, the game completed.
         game_complete_map[gid] = game_complete_map.get(gid, False) or bool(gc)
 
     n_complete_games = sum(1 for v in game_complete_map.values() if v)
@@ -159,16 +131,11 @@ def flatten_run(
     tmp_survivors = list(raw_dir.glob("*.tmp"))
     assert not tmp_survivors, f".tmp survivors in {raw_dir}: {tmp_survivors}"
 
-    # Partitioned dataset schema equals SCHEMA (minus shard if present)
-    out_schema = ds.dataset(str(out_dir), format="parquet").schema
-    shard_idx = out_schema.get_field_index("shard")
-    if shard_idx >= 0:
-        base_schema = out_schema.remove(shard_idx)
-    else:
-        base_schema = out_schema
-    assert base_schema.equals(SCHEMA, check_metadata=False), (
-        f"partitioned dataset schema drifted from SCHEMA.\n"
-        f"Got:      {base_schema}\n"
+    # Output schema equals SCHEMA
+    out_schema = pq.read_schema(str(out_path))
+    assert out_schema.equals(SCHEMA, check_metadata=False), (
+        f"output schema drifted from SCHEMA.\n"
+        f"Got:      {out_schema}\n"
         f"Expected: {SCHEMA}"
     )
 
@@ -180,7 +147,6 @@ def flatten_run(
         assert not overlap, f"game_ids overlap between splits: {overlap}"
         seen |= set(ids)
 
-    # Splits cover exactly the full unique_id set
     assert seen == set(unique_ids), (
         f"splits do not cover all game_ids.\n"
         f"Missing: {set(unique_ids) - seen}\n"
@@ -192,32 +158,32 @@ def flatten_run(
         "total_snapshots": total_snapshots,
         "truncation_rate": truncation_rate,
         "n_failed_games": n_failed_games,
+        "out_path": str(out_path),
         "splits_path": str(splits_path),
     }
-
 
 
 # CLI entry point
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Flatten raw per-game parquet files.")
+    parser = argparse.ArgumentParser(description="Flatten raw per-game parquet files into a single dataset file.")
     parser.add_argument(
         "--raw-dir", type=Path, default=Path("data/raw"),
         help="Directory of per-game parquet files (default: data/raw)"
     )
     parser.add_argument(
-        "--out-dir", type=Path, default=Path("data/snapshots.parquet"),
-        help="Root path for the partitioned parquet dataset"
+        "--out-file", type=Path, default=Path("data/snapshots.parquet"),
+        help="Output parquet file (default: data/snapshots.parquet)"
     )
     parser.add_argument(
         "--data-dir", type=Path, default=None,
-        help="Where to write splits.json (default: out_dir.parent)"
+        help="Where to write splits.json (default: out_file.parent)"
     )
     args = parser.parse_args()
     result = flatten_run(
         raw_dir=args.raw_dir,
-        out_dir=args.out_dir,
+        out_path=args.out_file,
         data_dir=args.data_dir,
     )
     print(json.dumps(result, indent=2))
